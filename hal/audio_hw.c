@@ -381,13 +381,6 @@ static void request_out_focus(struct stream_out *out, long ns)
 {
     struct audio_device *adev = out->dev;
 
-    if (out->routing_change) {
-        out->routing_change = false;
-        // must be checked for backward compatibility
-        if (adev->adm_on_routing_change)
-            adev->adm_on_routing_change(adev->adm_data, out->handle);
-    }
-
     if (adev->adm_request_focus_v2)
         adev->adm_request_focus_v2(adev->adm_data, out->handle, ns);
     else if (adev->adm_request_focus)
@@ -397,12 +390,6 @@ static void request_out_focus(struct stream_out *out, long ns)
 static void request_in_focus(struct stream_in *in, long ns)
 {
     struct audio_device *adev = in->dev;
-
-    if (in->routing_change) {
-        in->routing_change = false;
-        if (adev->adm_on_routing_change)
-            adev->adm_on_routing_change(adev->adm_data, in->capture_handle);
-    }
 
     if (adev->adm_request_focus_v2)
         adev->adm_request_focus_v2(adev->adm_data, in->capture_handle, ns);
@@ -1218,6 +1205,10 @@ int select_devices(struct audio_device *adev, audio_usecase_t uc_id)
     if ((usecase->type == VOICE_CALL) ||
         (usecase->type == VOIP_CALL)  ||
         (usecase->type == PCM_HFP_CALL)) {
+        if(usecase->stream.out == NULL) {
+            ALOGE("%s: stream.out is NULL", __func__);
+            return -EINVAL;
+        }
         out_snd_device = platform_get_output_snd_device(adev->platform,
                                                         usecase->stream.out);
         in_snd_device = platform_get_input_snd_device(adev->platform, usecase->stream.out->devices);
@@ -1261,6 +1252,10 @@ int select_devices(struct audio_device *adev, audio_usecase_t uc_id)
             }
         }
         if (usecase->type == PCM_PLAYBACK) {
+            if (usecase->stream.out == NULL) {
+                ALOGE("%s: stream.out is NULL", __func__);
+                return -EINVAL;
+            }
             usecase->devices = usecase->stream.out->devices;
             in_snd_device = SND_DEVICE_NONE;
             if (out_snd_device == SND_DEVICE_NONE) {
@@ -1273,6 +1268,10 @@ int select_devices(struct audio_device *adev, audio_usecase_t uc_id)
                 }
             }
         } else if (usecase->type == PCM_CAPTURE) {
+            if (usecase->stream.in == NULL) {
+                ALOGE("%s: stream.in is NULL", __func__);
+                return -EINVAL;
+            }
             usecase->devices = usecase->stream.in->device;
             out_snd_device = SND_DEVICE_NONE;
             if (in_snd_device == SND_DEVICE_NONE) {
@@ -2351,10 +2350,12 @@ static int out_set_parameters(struct audio_stream *stream, const char *kvpairs)
             if (!out->standby) {
                 if (!same_dev) {
                     ALOGV("update routing change");
-                    out->routing_change = true;
                     audio_extn_perf_lock_acquire(&adev->perf_lock_handle, 0,
                                                  adev->perf_lock_opts,
                                                  adev->perf_lock_opts_size);
+                    if (adev->adm_on_routing_change)
+                        adev->adm_on_routing_change(adev->adm_data,
+                                                    out->handle);
                 }
                 select_devices(adev, out->usecase);
                 if (!same_dev)
@@ -3027,8 +3028,12 @@ static int out_flush(struct audio_stream_out* stream)
     if (is_offload_usecase(out->usecase)) {
         ALOGD("copl(%p):calling compress flush", out);
         lock_output_stream(out);
-        stop_compressed_output_l(out);
-        out->written = 0;
+        if (out->offload_state == OFFLOAD_STATE_PAUSED) {
+            stop_compressed_output_l(out);
+            out->written = 0;
+        } else {
+            ALOGW("%s called in invalid state %d", __func__, out->offload_state);
+        }
         pthread_mutex_unlock(&out->lock);
         ALOGD("copl(%p):out of compress flush", out);
         return 0;
@@ -3172,7 +3177,9 @@ static int in_set_parameters(struct audio_stream *stream, const char *kvpairs)
             /* If recording is in progress, change the tx device to new device */
             if (!in->standby && !in->is_st_session) {
                 ALOGV("update input routing change");
-                in->routing_change = true;
+                if (adev->adm_on_routing_change)
+                        adev->adm_on_routing_change(adev->adm_data,
+                                                    in->capture_handle);
                 ret = select_devices(adev, in->usecase);
             }
         }
