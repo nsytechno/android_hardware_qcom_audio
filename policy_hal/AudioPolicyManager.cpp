@@ -69,6 +69,12 @@
 #endif // DOLBY_END
 
 namespace android {
+
+static inline sp<SwAudioOutputDescriptor> cast(sp<AudioOutputDescriptor> outputDesc)
+{
+	return static_cast<SwAudioOutputDescriptor*>(outputDesc.get());
+}
+
 #ifdef VOICE_CONCURRENCY
 audio_output_flags_t AudioPolicyManagerCustom::getFallBackPath()
 {
@@ -142,12 +148,12 @@ extern "C" void destroyAudioPolicyManager(AudioPolicyInterface *interface)
      delete interface;
 }
 
-status_t AudioPolicyManagerCustom::setDeviceConnectionStateInt(audio_devices_t device,
+status_t AudioPolicyManagerCustom::setDeviceConnectionState(audio_devices_t device,
                                                          audio_policy_dev_state_t state,
                                                          const char *device_address,
                                                          const char *device_name)
 {
-    ALOGD("setDeviceConnectionStateInt() device: 0x%X, state %d, address %s name %s",
+    ALOGD("setDeviceConnectionState() device: 0x%X, state %d, address %s name %s",
             device, state, device_address, device_name);
 
     // connect/disconnect only 1 device at a time
@@ -1043,10 +1049,10 @@ status_t AudioPolicyManagerCustom::stopSource(sp<AudioOutputDescriptor> outputDe
     // handle special case for sonification while in call
     if (isInCall()) {
         if (outputDesc->isDuplicated()) {
-            handleIncallSonification(stream, false, false, outputDesc->subOutput1()->mIoHandle);
-            handleIncallSonification(stream, false, false, outputDesc->subOutput2()->mIoHandle);
+            handleIncallSonification(stream, false, false, cast(outputDesc->subOutput1())->mIoHandle);
+            handleIncallSonification(stream, false, false, cast(outputDesc->subOutput2())->mIoHandle);
         }
-        handleIncallSonification(stream, false, false, outputDesc->mIoHandle);
+        handleIncallSonification(stream, false, false, cast(outputDesc)->mIoHandle);
     }
 
     if (outputDesc->mRefCount[stream] > 0) {
@@ -1180,7 +1186,7 @@ status_t AudioPolicyManagerCustom::startSource(sp<AudioOutputDescriptor> outputD
 
         // handle special case for sonification while in call
         if (isInCall()) {
-            handleIncallSonification(stream, true, false, outputDesc->mIoHandle);
+            handleIncallSonification(stream, true, false, cast(outputDesc)->mIoHandle);
         }
 
         // apply volume rules for current stream and device if necessary
@@ -1201,7 +1207,7 @@ status_t AudioPolicyManagerCustom::startSource(sp<AudioOutputDescriptor> outputD
     else {
         // handle special case for sonification while in call
         if (isInCall()) {
-            handleIncallSonification(stream, true, false, outputDesc->mIoHandle);
+            handleIncallSonification(stream, true, false, cast(outputDesc)->mIoHandle);
         }
     }
     return NO_ERROR;
@@ -1319,7 +1325,7 @@ status_t AudioPolicyManagerCustom::checkAndSetVolume(audio_stream_type_t stream,
         }
 
         if (voiceVolume != mLastVoiceVolume && ((outputDesc == mPrimaryOutput) ||
-            isDirectOutput(outputDesc->mIoHandle) || device & AUDIO_DEVICE_OUT_ALL_USB)) {
+            isDirectOutput(cast(outputDesc)->mIoHandle) || device & AUDIO_DEVICE_OUT_ALL_USB)) {
             mpClientInterface->setVoiceVolume(voiceVolume, delayMs);
             mLastVoiceVolume = voiceVolume;
         }
@@ -1350,6 +1356,23 @@ bool AudioPolicyManagerCustom::isDirectOutput(audio_io_handle_t output) {
         }
     }
     return false;
+}
+
+audio_io_handle_t AudioPolicyManagerCustom::getOutput(audio_stream_type_t stream,
+                                                uint32_t samplingRate,
+                                                audio_format_t format,
+                                                audio_channel_mask_t channelMask,
+                                                audio_output_flags_t flags,
+                                                const audio_offload_info_t *offloadInfo)
+{
+    routing_strategy strategy = getStrategy(stream);
+    audio_devices_t device = getDeviceForStrategy(strategy, false /*fromCache*/);
+    ALOGV("getOutput() device %d, stream %d, samplingRate %d, format %x, channelMask %x, flags %x",
+          device, stream, samplingRate, format, channelMask, flags);
+
+    return getOutputForDevice(device, AUDIO_SESSION_ALLOCATE,
+                              stream, samplingRate,format, channelMask,
+                              flags, offloadInfo);
 }
 
 bool static tryForDirectPCM(int bitWidth, audio_output_flags_t *flags, uint32_t samplingRate)
@@ -1401,6 +1424,7 @@ status_t AudioPolicyManagerCustom::getOutputForAttr(const audio_attributes_t *at
                                               audio_port_handle_t selectedDeviceId,
                                               const audio_offload_info_t *offloadInfo)
 {
+#ifdef AUDIO_EXTN_POLICY_ENABLED
     audio_offload_info_t tOffloadInfo = AUDIO_INFO_INITIALIZER;
 
     uint32_t bitWidth = (audio_bytes_per_sample(format) * 8);
@@ -1422,6 +1446,7 @@ status_t AudioPolicyManagerCustom::getOutputForAttr(const audio_attributes_t *at
         }
         offloadInfo = &tOffloadInfo;
     }
+#endif //AUDIO_EXTN_POLICY_ENABLED
 
     return AudioPolicyManager::getOutputForAttr(attr, output, session, stream,
                                                 (uid_t)uid, (uint32_t)samplingRate,
@@ -1690,6 +1715,7 @@ audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
         }
     }
 
+#ifdef AUDIO_EXTN_POLICY_ENABLED
     // Do offload magic here
     if ((flags == AUDIO_OUTPUT_FLAG_NONE) &&
         (stream == AUDIO_STREAM_MUSIC) &&
@@ -1698,6 +1724,7 @@ audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
         flags = (audio_output_flags_t)(AUDIO_OUTPUT_FLAG_DIRECT_PCM);
         ALOGD("AudioCustomHAL --> Force Direct Flag .. flag (0x%x)", flags);
     }
+#endif //AUDIO_EXTN_POLICY_ENABLED
 
     sp<IOProfile> profile;
 
@@ -1761,10 +1788,17 @@ audio_io_handle_t AudioPolicyManagerCustom::getOutputForDevice(
                     }
                 }
             }
+<<<<<<< HEAD
             // close direct output if currently open and configured with different parameters
             if (outputDesc != NULL) {
                 closeOutput(outputDesc->mIoHandle);
             }
+=======
+        }
+        // close direct output if currently open and configured with different parameters
+        if (outputDesc != NULL) {
+            closeOutput(cast(outputDesc)->mIoHandle);
+>>>>>>> 1036c96... Fix build with aosp
         }
 
         // if the selected profile is offloaded and no offload info was specified,
@@ -2108,7 +2142,7 @@ status_t AudioPolicyManagerCustom::startInput(audio_io_handle_t input,
                 address = inputDesc->mPolicyMix->mDeviceAddress;
             }
             if (address != "") {
-                setDeviceConnectionStateInt(AUDIO_DEVICE_OUT_REMOTE_SUBMIX,
+                setDeviceConnectionState(AUDIO_DEVICE_OUT_REMOTE_SUBMIX,
                         AUDIO_POLICY_DEVICE_STATE_AVAILABLE,
                         address, "remote-submix");
             }
